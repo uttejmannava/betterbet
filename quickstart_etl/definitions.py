@@ -1,8 +1,12 @@
 from pathlib import Path
+import requests
+from requests import Response
 
 from dagster import (
     Definitions,
     ScheduleDefinition,
+    ConfigurableResource,
+    EnvVar,
     define_asset_job,
     graph_asset,
     link_code_references_to_git,
@@ -13,25 +17,23 @@ from dagster import (
 from dagster._core.definitions.metadata.source_code import AnchorBasedFilePathMapping
 
 from . import assets
+from .resources import *
 
 daily_refresh_schedule = ScheduleDefinition(
     job=define_asset_job(name="all_assets_job"), cron_schedule="0 0 * * *"
 )
 
+# @op
+# def foo_op():
+#     return 5
 
-@op
-def foo_op():
-    return 5
 
-
-@graph_asset
-def my_asset():
-    return foo_op()
-
+# @graph_asset
+# def my_asset():
+#     return foo_op()
 
 my_assets = with_source_code_references(
     [
-        my_asset,
         *load_assets_from_package_module(assets),
     ]
 )
@@ -48,5 +50,8 @@ my_assets = link_code_references_to_git(
 
 defs = Definitions(
     assets=my_assets,
+    resources={
+        "odds_api": OddsAPIResource()
+    },
     schedules=[daily_refresh_schedule],
 )
