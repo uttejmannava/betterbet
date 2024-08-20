@@ -2,10 +2,15 @@ import requests
 import json
 import os
 from datetime import datetime
+import warnings
 
-from . import constants
-from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, EnvVar, asset
+from .constants import *
+from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, EnvVar, asset, ExperimentalWarning
 from ..resources import *
+
+
+# Suppressing ExperimentalWarning
+warnings.filterwarnings("ignore", category=ExperimentalWarning)
 
 
 @asset
@@ -14,14 +19,6 @@ def raw_odds_data(odds_api: OddsAPIResource) -> list:
     Pull raw betting odds from specified markets and bookmakers.
     API Docs: https://the-odds-api.com/liveapi/guides/v4/index.html
     """
-
-    # Defining params for request
-    SPORT = ['baseball_mlb'] # use the sport_key from the /sports endpoint, or use 'upcoming' to see the next 8 games across all sports
-    REGIONS = ['us'] # uk | us | eu | au. Multiple can be specified if comma delimited
-    BOOKMAKERS = ['betmgm', 'betrivers', 'draftkings', 'fanduel', 'ballybet', 'espnbet', 'pinnacle', 'betway'] # Every group of 10 bookmakers is the equivalent of 1 region.
-    MARKETS = ['h2h', 'spreads', 'totals'] # h2h | spreads | totals. Multiple can be specified if comma delimited
-    ODDS_FORMAT = 'american' # decimal | american
-    DATE_FORMAT = 'iso' # iso | unix
     
     '''
     The usage quota cost = [number of markets specified] x [number of regions specified]
@@ -70,6 +67,10 @@ def raw_odds_data(odds_api: OddsAPIResource) -> list:
 
 @asset()
 def processed_odds_data(raw_odds_data: list[dict]) -> dict:
+    """
+    Loads all games into a Python dictionary.
+    Receives JSON in-memory (Pythonic object).
+    """
     print("raw_odds_data:", raw_odds_data)
     processed_data = {}
     
@@ -108,3 +109,45 @@ def processed_odds_data(raw_odds_data: list[dict]) -> dict:
     print("PROCESSED DATA:", processed_data)
     return processed_data
 
+
+@asset()
+def arbitrage_pairs(processed_odds_data: dict) -> dict:
+    arbitrage_opportunities = {}
+
+    for game_id, game_data in processed_odds_data.items():
+        arbitrage_opportunities[game_id] = {
+            'sport_key': game_data['sport_key'],
+            'sport_title': game_data['sport_title'],
+            'home_team': game_data['home_team'],
+            'away_team': game_data['away_team'],
+            'commence_time': game_data['commence_time'],
+            'arbitrage_opportunities': []
+        }
+
+        for market_key in MARKETS:
+            best_odds = {'team1': {'odds': -1000000, 'bookmaker': ''}, 
+                         'team2': {'odds': -1000000, 'bookmaker': ''}}
+
+            for bookmaker, bm_data in game_data['bookmakers'].items():
+                if market_key in bm_data['markets']:
+                    outcomes = bm_data['markets'][market_key]['outcomes']
+
+                    if market_key == 'h2h' or market_key == 'spreads':
+                        team1, team2 = game_data['home_team'], game_data['away_team']
+                    elif market_key == 'totals':
+                        team1, team2 = 'Over', 'Under'
+
+    
+    return arbitrage_opportunities
+    
+    pass
+
+
+@asset()
+def low_hold_pairs(processed_odds_data: dict) -> dict:
+    pass
+
+
+@asset()
+def positive_ev_pairs(processed_odds_data: dict) -> dict:
+    pass
