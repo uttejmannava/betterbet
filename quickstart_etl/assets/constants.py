@@ -1,9 +1,55 @@
-# store file paths, api endpoints, date formats, dates, etc. as constants
+# store file paths, date formats, dates, etc. as constants
 
 # Defining params for request
-SPORT = ['baseball_mlb'] # use the sport_key from the /sports endpoint, or use 'upcoming' to see the next 8 games across all sports
-REGIONS = ['us'] # uk | us | eu | au. Multiple can be specified if comma delimited
-BOOKMAKERS = ['betmgm', 'betrivers', 'draftkings', 'fanduel', 'ballybet', 'espnbet', 'pinnacle', 'betway'] # Every group of 10 bookmakers is the equivalent of 1 region.
-MARKETS = ['h2h', 'spreads', 'totals'] # h2h | spreads | totals. Multiple can be specified if comma delimited
-ODDS_FORMAT = 'american' # decimal | american
-DATE_FORMAT = 'iso' # iso | unix
+SPORTSBOOKS =  [
+    '888sport_ontario',
+    'betrivers_ontario',
+    'betsafe_ontario',
+    'bodog',
+    'bally_bet',
+    'casumo_ontario', 
+    'draftkings_ontario',
+    'fanduel_ontario',
+    'northstar_bets_ontario',
+    'pointsbet_ontario',
+    'pinnacle',
+    'thescore_bet_ontario'
+    ]
+
+LEAGUE_MARKETS = {
+    'mlb': 
+        [
+            # moneylines
+            '1st_3_innings_moneyline',
+            '1st_5_innings_moneyline',
+            # '1st_inning_moneyline',
+            'moneyline',
+
+            # #run lines
+            # 'run_line',
+        ],
+
+    # 'united_states_major_league_soccer': 
+    #     [
+    #         'total_corners',
+    #         ''           
+    #     ],
+    
+    'nfl': 
+        [
+            '1st_half_moneyline',
+            'moneyline',
+        ],
+    
+    # 'england_premier_league':
+    #     [
+    #         'total_corners',
+    #         'total_shots',
+    #         'total_shots_on_target',
+    #         'total_red_cards',
+
+    #     ]
+    
+}
+
+PRICE = 'american' # decimal | american

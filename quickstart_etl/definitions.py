@@ -52,7 +52,7 @@ my_assets = with_source_code_references(
 defs = Definitions(
     assets=my_assets,
     resources={
-        "odds_api": OddsAPIResource()
+        "odds_api": OddsBlazeAPIResource()
     },
     # schedules=[daily_refresh_schedule],
 )

@@ -2,11 +2,13 @@ import requests
 import json
 import os
 from datetime import datetime
+import pytz
 import warnings
 
 from .constants import *
 from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, EnvVar, asset, ExperimentalWarning
 from ..resources import *
+from .functions import *
 
 
 # Suppressing ExperimentalWarning
@@ -14,140 +16,213 @@ warnings.filterwarnings("ignore", category=ExperimentalWarning)
 
 
 @asset
-def raw_odds_data(odds_api: OddsAPIResource) -> list:
+def raw_odds_data(odds_api: OddsBlazeAPIResource) -> list:
     """
     Pull raw betting odds from specified markets and bookmakers.
-    API Docs: https://the-odds-api.com/liveapi/guides/v4/index.html
+    OddsBlaze API Docs: https://docs.oddsblaze.com/api/odds
     """
-    
-    '''
-    The usage quota cost = [number of markets specified] x [number of regions specified]
-    For examples of usage quota costs, see https://the-odds-api.com/liveapi/guides/v4/#usage-quota-costs
-    '''
 
-    # Grab JSON odds data
-    params={
-            'api_key': os.getenv("THE_ODDS_API_KEY"),
-            # 'regions': REGIONS,
-            'bookmakers': ','.join(BOOKMAKERS),
-            'markets': ','.join(MARKETS),
-            'oddsFormat': ODDS_FORMAT,
-            'dateFormat': DATE_FORMAT,
-        }
-
-    # each sport requires a separate API call
+    # each league requires a separate API call
     all_odds_data = []
 
-    for sport in SPORT:
-        odds_response = odds_api.request(sport, params)
+    for league in LEAGUE_MARKETS:
+
+        params={
+            'key': os.getenv("ODDSBLAZE_KEY"),
+            'league': league,
+            'market': ','.join(LEAGUE_MARKETS[league]),
+            'price': PRICE,
+            'main': 'true',
+            # 'main_id': 'true'
+        }
+        print(params)
+
+        odds_response = odds_api.request(params)
+
         if odds_response.status_code != 200:
             print(odds_response.text)
             # raise Exception(f"API request failed: {odds_response.text}")
         else:
-            all_odds_data.extend(odds_response.json())
+            all_odds_data.extend(odds_response.json()["games"]) # revisit and see how to add multiple leagues
 
+    filename = f"data/raw_odds_test.json"
+    with open(filename, "w") as f:
+        json.dump(all_odds_data, f)
+
+    # Return a Pythonic object to avoid I/O
     return all_odds_data
-
-    # for n in SPORT:
-    #     odds_response = odds_api.request(n, params)
-
-    #     # Handle response error codes
-    #     if odds_response.status_code != 200:
-    #         print(odds_response.text)
-    #     else:
-    #         raw_odds_json = odds_response.json()
-    #         timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    #         filename = f"data/raw_odds_{n}_{timestamp}.json"
-    #         with open(filename, "w") as f:
-    #             json.dump(raw_odds_json, f)
-    #         filename_list.append(filename)
-    
-    # return filename_list
 
 
 @asset()
-def processed_odds_data(raw_odds_data: list[dict]) -> dict:
+def processed_games(raw_odds_data: list[dict]) -> list:
     """
     Loads all games into a Python dictionary.
     Receives JSON in-memory (Pythonic object).
     """
-    print("raw_odds_data:", raw_odds_data)
-    processed_data = {}
-    
-    # Process each sport's games separately
-    for game in raw_odds_data:
-        print("Processing game:", game['id'])  # Debug print statement
-        game_id = game['id']
-        processed_data[game_id] = {
-            'sport_key': game['sport_key'],
-            'sport_title': game['sport_title'],
-            'commence_time': game['commence_time'],
-            'home_team': game['home_team'],
-            'away_team': game['away_team'],
-            'bookmakers': {}
+    processed_games = raw_odds_data
+
+    for game in processed_games:
+        print(game['id'])
+
+        game['start'] = datetime.strptime(game['start'], "%Y-%m-%dT%H:%M:%S")
+
+        utc_timezone = pytz.UTC
+        game['start'] = utc_timezone.localize(game['start'])
+
+        game['sportsbooks'] = [
+            sportsbook for sportsbook in game['sportsbooks']
+            if sportsbook['id'] in SPORTSBOOKS
+        ]
+
+    current_time = datetime.utcnow().replace(tzinfo=utc_timezone)
+
+    processed_games = [
+        game for game in processed_games
+        if ( not (current_time - game['start']).total_seconds() / 60 > 30 and not game['live'] )
+    ]
+
+    print("length processed:", len(processed_games))
+    return processed_games
+
+
+@asset()
+def best_odds_pairs(processed_games: list) -> dict:
+    """
+    For each game and market, identifies the best odds for every pair.
+    There can be a max of one best odds pair for each market, for each game.
+    If a game has no arbitrage pairs, it is not returned in the final dictionary.
+    """
+    best_odds_pairs = {}
+
+    for game in processed_games:
+
+        league_key = game['id'].split(':')[0]
+
+        best_odds_pairs[game['id']] = {
+            'sport': game['sport'],
+            'league_key': league_key,
+            'league_name': game['league'],
+            'home_team': game['teams']['home'],
+            'away_team': game['teams']['away'],
+            'start_time': str(game['start']),
+            'status': game['status'],
+            'is_live': game['live'],
+            'pairs': [],
+            'arb_pairs': [],
+            'low_hold_pairs': []
         }
 
-        for bookmaker in game['bookmakers']:
-            bm_key = bookmaker['key']
-            processed_data[game_id]['bookmakers'][bm_key] = {
-                'title': bookmaker['title'],
-                'last_update': bookmaker['last_update'],
-                'markets': {}
-            }
+        for market in LEAGUE_MARKETS[league_key]:
 
-            for market in bookmaker['markets']:
-                market_key = market['key']
-                processed_data[game_id]['bookmakers'][bm_key]['markets'][market_key] = {
-                    'last_update': market['last_update'],
-                    'outcomes': {
-                        outcome['name']: {
-                            'price': outcome['price'],
-                            'point': outcome.get('point')
-                        } for outcome in market['outcomes']
-                    }
-                }
-    print("PROCESSED DATA:", processed_data)
-    return processed_data
+            home_team_id = game['teams']['home']['id'].split(':')[1]
+            away_team_id = game['teams']['away']['id'].split(':')[1]
 
+            best_odds = {home_team_id: {'odds': -1000000, 'bookmaker': ''},
+                         away_team_id: {'odds': -1000000, 'bookmaker': ''}}
+            
+            for sportsbook in game['sportsbooks']:
+                
+                for bet in sportsbook['odds']:
 
-@asset()
-def arbitrage_pairs(processed_odds_data: dict) -> dict:
-    arbitrage_opportunities = {}
+                    bet_market = bet['id'].split(':')[1]
+                    bet_winning_team = bet['id'].split(':')[2]
 
-    for game_id, game_data in processed_odds_data.items():
-        arbitrage_opportunities[game_id] = {
-            'sport_key': game_data['sport_key'],
-            'sport_title': game_data['sport_title'],
-            'home_team': game_data['home_team'],
-            'away_team': game_data['away_team'],
-            'commence_time': game_data['commence_time'],
-            'arbitrage_opportunities': []
-        }
+                    if market == bet_market:
+                        if int(bet['price']) > best_odds[bet_winning_team]['odds']:
+                            best_odds[bet_winning_team]['odds'] = int(bet['price'])
+                            best_odds[bet_winning_team]['bookmaker'] = sportsbook['id']
 
-        for market_key in MARKETS:
-            best_odds = {'team1': {'odds': -1000000, 'bookmaker': ''}, 
-                         'team2': {'odds': -1000000, 'bookmaker': ''}}
+            if best_odds[home_team_id]['bookmaker'] == '' and best_odds[away_team_id]['bookmaker'] == '':
+                continue
+            
+            print("market:", market, " | best odds:", best_odds)
 
-            for bookmaker, bm_data in game_data['bookmakers'].items():
-                if market_key in bm_data['markets']:
-                    outcomes = bm_data['markets'][market_key]['outcomes']
+            home_prob = round(calculate_implied_probability(best_odds[home_team_id]['odds']), 2)
+            away_prob = round(calculate_implied_probability(best_odds[away_team_id]['odds']), 2)
 
-                    if market_key == 'h2h' or market_key == 'spreads':
-                        team1, team2 = game_data['home_team'], game_data['away_team']
-                    elif market_key == 'totals':
-                        team1, team2 = 'Over', 'Under'
+            arb_value = round(calculate_arbitrage(home_prob, away_prob), 2)
+            profit_percentage = str(round((1 - arb_value) * 100, 2))
 
+            best_odds_pairs[game['id']]['pairs'].append({ # Every market has a best odds pair
+                'market': market,
+                'home_team': {
+                    'best_odds': best_odds[home_team_id]['odds'],
+                    'bookmaker': best_odds[home_team_id]['bookmaker'],
+                    'implied_probability': home_prob
+                },
+                'away_team': {
+                    'best_odds': best_odds[away_team_id]['odds'],
+                    'bookmaker': best_odds[away_team_id]['bookmaker'],
+                    'implied_probability': away_prob
+                },
+                'arb_value': arb_value,
+                'profit_percentage': profit_percentage
+            })
+
+            if arb_value < 1: # This indicates an arbitrage opportunity
+
+                best_odds_pairs[game['id']]['arb_pairs'].append({
+                    'market': market,
+                    'home_team': {
+                        'best_odds': best_odds[home_team_id]['odds'],
+                        'bookmaker': best_odds[home_team_id]['bookmaker'],
+                        'implied_probability': home_prob
+                    },
+                    'away_team': {
+                        'best_odds': best_odds[away_team_id]['odds'],
+                        'bookmaker': best_odds[away_team_id]['bookmaker'],
+                        'implied_probability': away_prob
+                    },
+                    'arb_value': arb_value,
+                    'profit_percentage': profit_percentage
+                })
+
+            elif arb_value == 1: # This indicates a low hold opportunity
+
+                best_odds_pairs[game['id']]['low_hold_pairs'].append({
+                    'market': market,
+                    'home_team': {
+                        'best_odds': best_odds[home_team_id]['odds'],
+                        'bookmaker': best_odds[home_team_id]['bookmaker'],
+                        'implied_probability': home_prob
+                    },
+                    'away_team': {
+                        'best_odds': best_odds[away_team_id]['odds'],
+                        'bookmaker': best_odds[away_team_id]['bookmaker'],
+                        'implied_probability': away_prob
+                    },
+                    'arb_value': arb_value,
+                    'profit_percentage': profit_percentage
+                })
+
+    # best_odds_pairs = {k: v for k, v in best_odds_pairs.items() if v['arb_pairs']}
     
-    return arbitrage_opportunities
-    
-    pass
+    filename = f"data/raw_odds_test.json" 
+    with open(filename, "w") as f:
+        json.dump(best_odds_pairs, f)
+
+    return best_odds_pairs
 
 
-@asset()
-def low_hold_pairs(processed_odds_data: dict) -> dict:
-    pass
+# @asset()
+# def arbitrage_pairs(best_odds_pairs: dict) -> None:
+#     """
+#     For each game, identifies any arbitrage opportunities available.
+#     There can be a max of one arbitrage OR low-hold pair for each market, for each game.
+#     If a game has no arbitrage pairs, it is not returned in the final dictionary.
+#     """
+#     pass
+
+# @asset()
+# def low_hold_pairs(best_odds_pairs: dict) -> None:
+#     """
+#     For each game, identifies any low-hold pairs available.
+#     There can be a max of one low-hold OR arbitrage pair for each market, for each game.
+#     If a game has no low-hold pairs, it is not returned in the final dictionary.
+#     """
+#     pass
 
 
-@asset()
-def positive_ev_pairs(processed_odds_data: dict) -> dict:
-    pass
+# # @asset()
+# # def positive_ev_pairs(processed_games: list) -> None:
+# #     pass
