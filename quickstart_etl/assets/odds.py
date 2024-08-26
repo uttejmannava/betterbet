@@ -1,12 +1,19 @@
 import requests
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import warnings
 
 from .constants import *
-from dagster import AssetExecutionContext, MaterializeResult, MetadataValue, EnvVar, asset, ExperimentalWarning
+from dagster import (
+    AssetExecutionContext, 
+    MaterializeResult,
+    MetadataValue,
+    EnvVar,
+    asset,
+    ExperimentalWarning,
+)
 from ..resources import *
 from .functions import *
 
@@ -65,16 +72,14 @@ def processed_games(raw_odds_data: list[dict]) -> list:
         print(game['id'])
 
         game['start'] = datetime.strptime(game['start'], "%Y-%m-%dT%H:%M:%S")
-
-        utc_timezone = pytz.UTC
-        game['start'] = utc_timezone.localize(game['start'])
+        game['start'] = pytz.UTC.localize(game['start'])
 
         game['sportsbooks'] = [
             sportsbook for sportsbook in game['sportsbooks']
             if sportsbook['id'] in SPORTSBOOKS
         ]
 
-    current_time = datetime.utcnow().replace(tzinfo=utc_timezone)
+    current_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
 
     processed_games = [
         game for game in processed_games
@@ -90,7 +95,8 @@ def best_odds_pairs(processed_games: list) -> dict:
     """
     For each game and market, identifies the best odds for every pair.
     There can be a max of one best odds pair for each market, for each game.
-    If a game has no arbitrage pairs, it is not returned in the final dictionary.
+    If a game has no best odds pairs, it is not returned in the final dictionary.
+    arb_pairs and low_odds_pairs lists track which, if any, best odds pairs fall under those respective categories.
     """
     best_odds_pairs = {}
 
@@ -197,30 +203,11 @@ def best_odds_pairs(processed_games: list) -> dict:
 
     # best_odds_pairs = {k: v for k, v in best_odds_pairs.items() if v['arb_pairs']}
     
-    filename = f"data/raw_odds_test.json" 
+    filename = f"data/best_odds_pairs.json" 
     with open(filename, "w") as f:
         json.dump(best_odds_pairs, f)
 
     return best_odds_pairs
-
-
-# @asset()
-# def arbitrage_pairs(best_odds_pairs: dict) -> None:
-#     """
-#     For each game, identifies any arbitrage opportunities available.
-#     There can be a max of one arbitrage OR low-hold pair for each market, for each game.
-#     If a game has no arbitrage pairs, it is not returned in the final dictionary.
-#     """
-#     pass
-
-# @asset()
-# def low_hold_pairs(best_odds_pairs: dict) -> None:
-#     """
-#     For each game, identifies any low-hold pairs available.
-#     There can be a max of one low-hold OR arbitrage pair for each market, for each game.
-#     If a game has no low-hold pairs, it is not returned in the final dictionary.
-#     """
-#     pass
 
 
 # # @asset()
